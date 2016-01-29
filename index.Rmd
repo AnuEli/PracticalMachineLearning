@@ -1,0 +1,157 @@
+---
+title: "Practical Machine Learning"
+author: "Anu"
+date: "29. tammikuuta 2016"
+output: html_document
+---
+
+**Feature selection**
+
+First, I read the both train and test data which had 19622 instances and 160/20 predictors. Because the amount of predictors was quite high
+I used several different functions to reduce the amount of predictors. All the predictor reducements were done for the final test data, with 20 instances, as well.
+
+First, I used nearZeroVar function to reveal predictors which have no variability. I filtered variables with zero and near zero variance and the amount of variables decreased to 100. After that I selected to the final data only columns which did not have any missing data (colMeans( is.na( selectedData )) == 0). That decreased the variable amount to 59. 
+
+Nextly, I removed the 6 first variables from the data because line number (x), user name, timestamps and window 
+number can not have effect to the user activity and those can not be used for prediction. Now, the predictor amount was 53.
+
+Next, I selected the numerical predictors and check how those correlate with each others. There were 27 correlating variables 
+and those were removed from the final train and test data. Now the predictor amount was 26.
+
+```{r}
+  library( caret )
+  library( FSelector )
+  library( mlbench )
+  library( Metrics )
+  library( randomForest )
+  library( C50 )
+  library( dplyr )
+  
+  readData <- read.csv("C:\\Coursera\\pml-training.csv")
+  readTestData <- read.csv("C:\\Coursera\\pml-testing.csv")
+  
+  ##Set seed ##
+  set.seed( 195 )
+  
+  ## nearZeroVar in libarary caret, reveals variables which have no variability (Zero and Near Zero-Variance Predictors)
+  nearZero <- nearZeroVar( readData )
+  selectedData <- readData[, -nearZero ]
+  selectedTestData <- readTestData[, -nearZero ]
+  
+  # Remove attributes which have missing values
+  selectedTrainData <- selectedData[, colMeans( is.na( selectedData )) == 0 ]
+  selectedTestData <- selectedTestData[, colMeans( is.na( selectedData )) == 0 ]
+  
+  # Remove line numbers, names and dates from the data -> not relevant to classify activity
+  selectedTrainData <- selectedTrainData[, 7:ncol( selectedTrainData ) ]
+  selectedTestData <- selectedTestData[, 7:ncol( selectedTestData ) ]
+  
+  # Find numeric predictores and calculate a correlation matrix
+  numericDataTrain <- selectedTrainData[ sapply( selectedTrainData, is.numeric )]
+  correlation <- cor( numericDataTrain )
+
+  # Find most correlating predictors 
+  corrMost <- findCorrelation( correlation, cutoff = 0.6 )
+  
+  # Find names for most correlating predictors
+  corrPredictors <- colnames( numericDataTrain )[ corrMost ]
+  # Print most correlated predictores
+  corrPredictors
+  
+  # Remove most correlating predictores and create a new dataset for both train and test data
+  selectedTrainData <- selectedTrainData[ , -which( colnames( selectedTrainData) %in% corrPredictors )]
+  selectedTestData <- selectedTestData[ , -which( colnames( selectedTestData) %in% corrPredictors )]
+  
+```
+  I used information.gain to select the most important variables and selected the 10 most important to the final variable set. 
+  These were the final predictors to be used in the models.
+  I reduced the predictor amount to 10 to avoid overfitting and too complex models (which would be too time consuming in my slow laptop).
+  
+```{r}
+  
+  ## Check predictor importance
+  formula <- as.formula( classe ~ . )
+  varImpList <- information.gain( formula, data = selectedTrainData )  # library( FSelector))
+  print( varImpList )
+  
+  # Select 10 most important predictors to the final model 
+  subset <- cutoff.k( varImpList, 10 )
+  subset
+  selectedTrainData2 <- selectedTrainData[ , which( colnames( selectedTrainData ) %in% subset )]
+  selectedTrainData2 <-cbind( selectedTrainData2, selectedTrainData[, "classe"  ])
+  names( selectedTrainData2)[ ncol( selectedTrainData2 )] <- "classe"
+  
+ ```
+  
+**Model building**
+
+I split the train data for train and test data parts to validate the best algorithm for prediction
+I build several models with different algorihms: rpart, random forest (500 trees) and C50. (Gbm was too time consuming in my laptop so that was dropped out). 
+For a decision tree by rpart cross validation (10) was used. For random forest and C50 cross validation was not needed.
+
+By testing the model with the splitted test data, random forest gave the best results and that was used for the final prediction.
+
+
+```{r}
+
+  # Separate training and test set
+  inTrain  <- createDataPartition( selectedTrainData2$classe, p = 0.75, list =  FALSE )
+  TrainData <- selectedTrainData2[ inTrain, ]
+  OwnTestData <- selectedTrainData2[ -inTrain, ]
+
+  # Train decision tree with rpart a, cross validation (10) used
+  formula <- as.simple.formula( subset, "classe" )
+  modelRpart <- train( formula, 
+                       method = "rpart", 
+                       data = TrainData,
+                       trControl = trainControl( method = "cv" ) )
+  
+  ## Train random forest
+  modelRF <- randomForest( formula, data = TrainData, importance = TRUE, ntree = 500 )
+  
+  ## C5.0 library(C50) ##
+  modelC50 <- C5.0( formula, 
+                    data = TrainData )
+  
+  predRpart <- predict( modelRpart, OwnTestData[, -ncol( OwnTestData )] )
+  print("Rpart accuracy:")
+  sum( predRpart == OwnTestData[, ncol( OwnTestData ) ] ) / length( predRpart )
+  
+  predRF <- predict( modelRF, OwnTestData[, -ncol( OwnTestData )] )
+  print("Random forest accuracy:")
+  sum( predRF == OwnTestData[, ncol( OwnTestData ) ] ) / length( predRF )
+  
+  predC50 <- predict( modelC50, OwnTestData[, -ncol( OwnTestData )] )
+  print("C50 accuracy:")
+  sum( predC50 == OwnTestData[, ncol( OwnTestData ) ] ) / length( predC50 )
+
+  predDF <- data.frame( predC50, predRF, classe = OwnTestData$classe )
+  combModFit <- train( classe ~., method = "gam", data = predDF )
+  combPred <- predict( combModFit, OwnTestData[, -ncol(OwnTestData) ] )
+  sum( combPred == OwnTestData[, ncol( OwnTestData ) ] ) / length( combPred )
+  
+  ## Final prediction
+  
+  RFerror <- sum( predRF != OwnTestData[, ncol( OwnTestData ) ])/length( predRF )
+  RFerror
+  
+  predicted <- predict( modelRF, selectedTestData  )
+  print("Random forest results:"); print( predicted )
+  
+```
+
+**Out of sample error rate**
+					
+The out of sample error rate was calculated the same way as accuracy by counting the errorneous cases. 
+Results with the final test data was 20/20.
+
+  
+```{r}
+  ## Error rate
+  
+  print("Out of sample error rate:")
+  sum( combPred != OwnTestData[, ncol( OwnTestData ) ] ) / length( combPred )
+
+```
+
+
